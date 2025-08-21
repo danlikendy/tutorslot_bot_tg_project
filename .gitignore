@@ -1,25 +1,28 @@
-# venv
+# Virtualenv
 .venv/
 __pycache__/
 *.pyc
 
-# env
+# Environment
 .env
 *.env
 
 # OS / IDE
 .DS_Store
 .vscode/
+.idea/
 
-# python cache
+# Python packaging / cache
 *.egg-info/
 dist/
 build/
 
-# sqlite
+# SQLite databases
 *.sqlite3
 *.db
 
-# google creds
+# Google OAuth / credentials
 google_credentials.json
+credentials.json
 token.json
+app/integrations/token.json
