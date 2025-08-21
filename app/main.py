@@ -1,12 +1,15 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import sys
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
-
-from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram.types import BotCommand
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.base import STATE_RUNNING, SchedulerAlreadyRunningError
 from sqlalchemy import text
 
 from app.config import settings
@@ -15,17 +18,15 @@ from app.bot.handlers import start as start_handler
 from app.bot.handlers import booking as booking_handler
 from app.bot.handlers import manage as manage_handler
 from app.scheduler.jobs import setup_scheduler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# aiogram 3.x middleware для DI сессии
-from aiogram import BaseMiddleware
-from typing import Callable, Dict, Any, Awaitable
+from app.runtime import set_bot as rt_set_bot, set_scheduler as rt_set_scheduler
+from app.runtime import get_bot as rt_get_bot, get_scheduler as rt_get_scheduler
 
-class DBSessionMiddleware(BaseMiddleware):
-    async def __call__(self, handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]], event, data):
-        async with SessionLocal() as session:
-            data["session"] = session  # type: AsyncSession
-            return await handler(event, data)
+def get_bot() -> Bot:
+    return rt_get_bot()
+
+def get_scheduler() -> AsyncIOScheduler:
+    return rt_get_scheduler()
 
 async def on_startup(bot: Bot):
     await bot.set_my_commands(
@@ -45,42 +46,24 @@ async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     await init_db()
 
-    bot = Bot(token=settings.bot_token)
+    bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
+    rt_set_bot(bot)
+
     dp = Dispatcher(storage=MemoryStorage())
-
-    # middlewares
-    dp.message.middleware(DBSessionMiddleware())
-    dp.callback_query.middleware(DBSessionMiddleware())
-
-    # routers
     dp.include_router(start_handler.router)
     dp.include_router(booking_handler.router)
     dp.include_router(manage_handler.router)
 
-    # scheduler
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     setup_scheduler(scheduler, SessionLocal, bot)
 
-    # универсальный текстовый обработчик
-    @dp.message()
-    async def default_menu(msg):
-        text = (msg.text or "").strip()
-        if text in ("/start", "Старт", "Menu", "Меню"):
-            # НЕ вызываем хэндлер напрямую — повторяем его логику
-            from app.services.slot_service import SlotService
-            from app.bot.keyboards.common import kb_slots
+    if getattr(scheduler, "state", None) != STATE_RUNNING:
+        try:
+            scheduler.start()
+        except SchedulerAlreadyRunningError:
+            pass
 
-            async with SessionLocal() as session:
-                free = await SlotService.list_free(session)
-            await msg.answer("Выберите свободный слот для записи:", reply_markup=kb_slots(free))
-            return
-
-        if text == "Мои записи":
-            async with SessionLocal() as session:
-                await booking_handler.my_bookings(msg, session=session)
-            return
-
-        await msg.answer("Доступно: /start, 'Мои записи', /admin (для админов).")
+    rt_set_scheduler(scheduler)
 
     await on_startup(bot)
     await dp.start_polling(bot)

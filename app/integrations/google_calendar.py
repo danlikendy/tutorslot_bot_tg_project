@@ -1,6 +1,3 @@
-# Заглушка под Google Calendar; боевую интеграцию подключим после получения creds.
-# Идея: на create/cancel/reschedule вызывать upsert/delete события в календаре.
-
 from app.config import settings
 
 class GoogleCalendar:
@@ -10,7 +7,7 @@ class GoogleCalendar:
     async def upsert_event(*_, **__):
         if not GoogleCalendar.enabled:
             return
-        # TODO: реализовать через googleapiclient.discovery.build("calendar","v3", credentials=...)
+        # TODO
         return
 
     @staticmethod

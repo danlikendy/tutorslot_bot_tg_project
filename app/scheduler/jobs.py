@@ -1,14 +1,41 @@
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy.ext.asyncio import AsyncSession
-from aiogram import Bot
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
+from app.config import settings
+from app.storage.models import Booking
 from app.services.reminder_service import ReminderService
 
-def setup_scheduler(scheduler: AsyncIOScheduler, session_factory, bot: Bot):
-    # периодический джоб: каждые 5 минут проверяем напоминания
-    async def job():
-        async with session_factory() as session:  # type: AsyncSession
-            await ReminderService.scan_and_notify(session, bot)
+log = logging.getLogger("reminders.setup")
+TZ = ZoneInfo(settings.tz)
 
-    scheduler.add_job(job, IntervalTrigger(minutes=5), id="reminders", replace_existing=True)
-    scheduler.start()
+def setup_scheduler(scheduler, SessionLocal, bot) -> None:
+    async def rebuild() -> None:
+        try:
+            async with SessionLocal() as session:
+                res = await session.execute(
+                    select(Booking).options(selectinload(Booking.slot))
+                )
+                bookings = list(res.scalars().all())
+
+            for b in bookings:
+                await ReminderService.schedule_for_booking(scheduler, b)
+
+            log.info("reminders.rebuild done: %s bookings", len(bookings))
+        except Exception:
+            log.exception("reminders.rebuild failed")
+
+    run_at = datetime.now(TZ) + timedelta(seconds=1)
+    scheduler.add_job(
+        rebuild,
+        trigger="date",
+        run_date=run_at,
+        id="reminders.rebuild",
+        replace_existing=True,
+    )
+    log.info("reminders.rebuild scheduled at %s", run_at)

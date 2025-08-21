@@ -1,3 +1,6 @@
+from __future__ import annotations
+from typing import Optional
+
 from sqlalchemy import String, Integer, ForeignKey, DateTime, Boolean, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.storage.db import Base
@@ -15,7 +18,6 @@ class User(Base):
 class Slot(Base):
     __tablename__ = "slots"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # начало слота (локальное время TZ из настроек)
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True, unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
@@ -35,6 +37,8 @@ class Booking(Base):
 
     user: Mapped["User"] = relationship(back_populates="bookings")
     slot: Mapped["Slot"] = relationship(back_populates="booking")
+
+    gcal_event_id: Mapped[Optional[str]] = mapped_column(nullable=True)
 
     __table_args__ = (
         UniqueConstraint("slot_id", name="uq_booking_slot"),

@@ -1,16 +1,17 @@
-from aiogram import Router, F
-from aiogram.types import Message
+from aiogram import Router
 from aiogram.filters import CommandStart
-from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram.types import Message
 from app.services.slot_service import SlotService
-from app.bot.keyboards.common import kb_slots
+from app.bot.keyboards.common import kb_days_with_counts
+from app.storage.db import SessionLocal
 
 router = Router(name="start")
 
 @router.message(CommandStart())
-async def start(message: Message, session: AsyncSession):
-    free = await SlotService.list_free(session)
+async def start(message: Message):
+    async with SessionLocal() as session:
+        days = await SlotService.available_days(session)
     await message.answer(
-        "Выберите свободный слот для записи:",
-        reply_markup=kb_slots(free),
+        "Выберите день:",
+        reply_markup=kb_days_with_counts(list(days.items())),
     )
