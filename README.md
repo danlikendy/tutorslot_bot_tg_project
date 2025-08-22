@@ -1,7 +1,7 @@
 # TutorSlot Bot
 
 Телеграм-бот для записи учеников на занятия и управления расписанием;
-Реализован на **Python 3.11 + aiogram 3 + SQLAlchemy + APScheduler** с интеграцией Google Calendar.
+Реализован на **Python 3.11 + aiogram 3 + SQLAlchemy + APScheduler** с интеграцией Google Calendar
 
 ## Запуск проекта
 
