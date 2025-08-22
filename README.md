@@ -7,7 +7,7 @@
 
 1. Клонируем репозиторий:
    ```bash
-   git clone https://github.com/<your-repo>/tutorslot_bot_tg_project.git
+   git clone https://github.com/danlikendy/tutorslot_bot_tg_project.git
    cd tutorslot_bot_tg_project
    ```
 
@@ -23,7 +23,7 @@
    ```
    BOT_TOKEN=ваш_токен_бота
    TZ=Europe/Moscow
-   ADMINS=123456789,987654321
+   ADMINS=ваши_telegram_id_пользователей
    ```
 
 4. Настраиваем интеграцию Google Calendar:
