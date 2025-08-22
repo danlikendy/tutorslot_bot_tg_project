@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     admins_raw: str = Field(default="", alias="ADMINS")
     tz: str = Field(default=os.getenv("TZ", "Europe/Moscow"), alias="TZ")
 
+    booking_mode: str = Field(default="dates", alias="BOOKING_MODE")
+
     db_url: str = "sqlite+aiosqlite:///./bot.sqlite3"
 
     reminders_enabled: bool = Field(default=True, alias="REMINDERS_ENABLED")

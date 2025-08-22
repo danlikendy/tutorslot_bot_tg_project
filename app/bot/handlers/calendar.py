@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 from aiogram import Router, types
+from aiogram.filters import Command
+
 from app.services.google_calendar_service import create_event
 
 router = Router()
 
-@router.message(commands=["book"])
-async def book_event(message: types.Message):
+@router.message(Command("book"))
+async def book_event(message: types.Message) -> None:
     link = create_event(
         summary="Тестовое событие из бота",
         start_iso="2025-08-22T10:00:00",

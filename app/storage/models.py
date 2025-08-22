@@ -43,3 +43,20 @@ class Booking(Base):
     __table_args__ = (
         UniqueConstraint("slot_id", name="uq_booking_slot"),
     )
+
+class WeeklySubscription(Base):
+    __tablename__ = "weekly_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    student_name: Mapped[str] = mapped_column(String(200))
+    student_contact: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
+    weekday: Mapped[int] = mapped_column(Integer)
+    time_hhmm: Mapped[str] = mapped_column(String(5))
+    duration_min: Mapped[int] = mapped_column(Integer, default=60)
+
+    gcal_event_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

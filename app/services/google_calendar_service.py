@@ -27,18 +27,14 @@ _DEFAULT_SA_PATH = _ROOT / "integrations" / "service_account.json"
 _TZ_NAME = (getattr(settings, "tz", None) or "UTC").strip() or "UTC"
 _TZ = ZoneInfo(_TZ_NAME)
 
-
 def _ensure_aware(dt: datetime) -> datetime:
     return dt.replace(tzinfo=_TZ) if dt.tzinfo is None else dt
-
 
 def _rfc3339(dt: datetime) -> str:
     return _ensure_aware(dt).isoformat()
 
-
 def _read_json(path: Path) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
-
 
 def _fix_user_token_if_needed(token_path: Path, client_secrets_path: Path) -> Dict:
     data = _read_json(token_path)
@@ -244,6 +240,84 @@ class GoogleCalendarService:
         except HttpError as e:
             log.warning("gcal.get_event_html_link error: %s", e)
             return None
+
+    WEEKDAY_TO_BYDAY = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+    @classmethod
+    def create_recurring_event(
+        cls,
+        summary: str,
+        weekday: int,
+        time_hhmm: str,
+        duration_min: int,
+        attendee_email: Optional[str],
+        timezone: str = _TZ_NAME,
+    ) -> Optional[str]:
+        svc = cls._get_service()
+        if not svc:
+            return None
+
+        now = datetime.now(ZoneInfo(timezone))
+        days_ahead = (weekday - now.weekday()) % 7
+        start_dt = (now + timedelta(days=days_ahead)).replace(
+            hour=int(time_hhmm[:2]),
+            minute=int(time_hhmm[3:]),
+            second=0,
+            microsecond=0,
+        )
+        end_dt = start_dt + timedelta(minutes=duration_min)
+
+        body = {
+            "summary": summary,
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": timezone},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": timezone},
+            "recurrence": [f"RRULE:FREQ=WEEKLY;BYDAY={cls.WEEKDAY_TO_BYDAY[weekday]}"],
+        }
+        if attendee_email and "@" in attendee_email:
+            body["attendees"] = [{"email": attendee_email}]
+
+        try:
+            ev = (
+                svc.events()
+                .insert(
+                    calendarId=getattr(settings, "google_calendar_id", "primary"),
+                    body=body,
+                    sendUpdates="all",
+                )
+                .execute()
+            )
+            return ev.get("id")  # master/series id
+        except HttpError as e:
+            try:
+                detail = json.loads(e.content.decode())
+            except Exception:
+                detail = str(e)
+            log.error("gcal.create_recurring error: %s", detail)
+            return None
+
+    @classmethod
+    def delete_recurring_series(cls, event_id: str) -> bool:
+        svc = cls._get_service()
+        if not svc or not event_id:
+            return False
+        try:
+            (
+                svc.events()
+                .delete(
+                    calendarId=getattr(settings, "google_calendar_id", "primary"),
+                    eventId=event_id,
+                    sendUpdates="all",
+                )
+                .execute()
+            )
+            return True
+        except HttpError as e:
+            try:
+                detail = json.loads(e.content.decode())
+            except Exception:
+                detail = str(e)
+            log.error("gcal.delete_recurring error: %s", detail)
+            return False
 
 def create_event(summary: str, start_iso: str, end_iso: str, timezone: str = "UTC") -> Optional[str]:
     svc = GoogleCalendarService._get_service()

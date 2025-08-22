@@ -27,7 +27,6 @@ from app.runtime import get_scheduler
 from app.services.reminder_service import ReminderService
 
 TZ = ZoneInfo(settings.tz)
-
 router = Router(name="manage")
 
 def is_admin(user_id: int) -> bool:
@@ -62,7 +61,7 @@ async def _render_active_bookings_text() -> str:
 async def admin_panel(message: Message):
     assert message.from_user is not None
     if not is_admin(message.from_user.id):
-        await message.answer("Недостаточно прав.")
+        await message.answer("Недостаточно прав")
         return
 
     async with SessionLocal() as session:
@@ -78,11 +77,8 @@ async def admin_panel(message: Message):
 
 @router.callback_query(F.data.startswith("a:cancel:"))
 async def a_cancel(cb: CallbackQuery):
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
     assert cb.message is not None and cb.data is not None and cb.from_user is not None
     msg = cast(Message, cb.message)
-
     if not is_admin(cb.from_user.id):
         await cb.answer("Нет прав", show_alert=True)
         return
@@ -91,9 +87,7 @@ async def a_cancel(cb: CallbackQuery):
 
     async with SessionLocal() as session:
         res = await session.execute(
-            select(Booking)
-            .options(selectinload(Booking.slot))
-            .where(Booking.id == booking_id)
+            select(Booking).options(selectinload(Booking.slot)).where(Booking.id == booking_id)
         )
         bk = res.scalar_one_or_none()
         if bk is None:
@@ -106,17 +100,13 @@ async def a_cancel(cb: CallbackQuery):
         ok = await BookingService.admin_cancel(session, booking_id)
 
         res2 = await session.execute(
-            select(Booking)
-            .options(selectinload(Booking.slot))
-            .order_by(Booking.id.desc())
+            select(Booking).options(selectinload(Booking.slot)).order_by(Booking.id.desc())
         )
         all_bookings = list(res2.scalars().all())
 
-    if ok:
-        await msg.answer(f"Ученик {student} на дату {when:%d.%m %H:%M} отменён")
-    else:
-        await msg.answer("Не удалось отменить запись")
-
+    await msg.answer(
+        f"Ученик {student} на дату {when:%d.%m %H:%M} отменён" if ok else "Не удалось отменить запись"
+    )
     await msg.answer("Админ-панель (все записи):", reply_markup=kb_admin_bookings(all_bookings))
     await cb.answer()
 
@@ -144,7 +134,6 @@ async def a_edit_done(cb: CallbackQuery):
 
     text = await _render_active_bookings_text()
     await msg.answer(text)
-
     await cb.answer()
 
 @router.callback_query(F.data.startswith("a:edit_date:"))
@@ -195,11 +184,7 @@ async def a_edit_time_apply(cb: CallbackQuery):
     async with SessionLocal() as session:
         updated = await BookingService.reschedule_to(session, booking_id, new_start)
 
-    if updated:
-        await msg.answer("Дата/время обновлены")
-    else:
-        await msg.answer("Не удалось (время занято)")
-
+    await msg.answer("Дата/время обновлены" if updated else "Не удалось (время занято)")
     await msg.answer("Что дальше изменить?", reply_markup=kb_admin_edit_menu(booking_id))
     await cb.answer()
 
@@ -229,49 +214,18 @@ async def a_edit_contact(cb: CallbackQuery):
     await msg.answer("Введите новый контакт (почта):")
     await cb.answer()
 
-@router.message(Command("jobs"))
-async def admin_jobs(message: Message):
-    assert message.from_user is not None
-    if not is_admin(message.from_user.id):
-        await message.answer("Нет прав")
-        return
-
-    s = get_scheduler()
-    jobs = s.get_jobs()
-    if not jobs:
-        await message.answer("Задач нет")
-        return
-
-    lines = []
-    for j in jobs:
-        nxt = j.next_run_time.astimezone(TZ).strftime("%d.%m %H:%M:%S") if j.next_run_time else "—"
-        lines.append(f"{j.id} → {nxt}")
-    await message.answer("Активные задачи:\n" + "\n".join(lines))
-
-@router.message(Command("remindnow"))
-async def admin_remind_now(message: Message):
-    assert message.from_user is not None
-    if not is_admin(message.from_user.id):
-        await message.answer("Нет прав")
-        return
-
-    try:
-        parts = (message.text or "").split()
-        bid = int(parts[1])
-    except Exception:
-        await message.answer("Формат: /remindnow <booking_id>")
-        return
-
-    await ReminderService.send_reminder_job(bid)
-    await message.answer(f"Ок, отправил напоминание для #{bid}")
-
-@router.message(F.text & ~F.text.startswith("/"))
+@router.message(
+    F.text & ~F.text.startswith("/") &
+    F.from_user.func(lambda u: u is not None) &
+    F.from_user.func(lambda u: ADMIN_EDIT_ACTION.get(u.id) is not None)
+)
 async def a_edit_apply(message: Message):
     if message.from_user is None:
         return
     action = ADMIN_EDIT_ACTION.get(message.from_user.id)
     if not action:
         return
+
     what, booking_id = action
     text = (message.text or "").strip()
     if not text:
@@ -280,19 +234,11 @@ async def a_edit_apply(message: Message):
 
     async with SessionLocal() as session:
         if what == "name":
-            updated = await BookingService.admin_update_content(
-                session, booking_id, student_name=text
-            )
+            updated = await BookingService.admin_update_content(session, booking_id, student_name=text)
         else:
-            updated = await BookingService.admin_update_content(
-                session, booking_id, contact=text
-            )
+            updated = await BookingService.admin_update_content(session, booking_id, contact=text)
 
-    if updated:
-        await message.answer("Обновлено")
-    else:
-        await message.answer("Не удалось обновить")
-
+    await message.answer("Обновлено" if updated else "Не удалось обновить")
     await message.answer("Что дальше изменить?", reply_markup=kb_admin_edit_menu(booking_id))
     ADMIN_EDIT_ACTION.pop(message.from_user.id, None)
 
@@ -312,3 +258,35 @@ async def admin_ids(message: Message):
         return
     lines = [f"#{b.id} — {b.slot.start_at:%d.%m %H:%M} • {b.student_name} ({b.student_contact or '—'})" for b in bs]
     await message.answer("\n".join(lines))
+
+@router.message(Command("jobs"))
+async def admin_jobs(message: Message):
+    assert message.from_user is not None
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет прав")
+        return
+    s = get_scheduler()
+    jobs = s.get_jobs()
+    if not jobs:
+        await message.answer("Задач нет")
+        return
+    lines = []
+    for j in jobs:
+        nxt = j.next_run_time.astimezone(TZ).strftime("%d.%m %H:%M:%S") if j.next_run_time else "—"
+        lines.append(f"{j.id} → {nxt}")
+    await message.answer("Активные задачи:\n" + "\n".join(lines))
+
+@router.message(Command("remindnow"))
+async def admin_remind_now(message: Message):
+    assert message.from_user is not None
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет прав")
+        return
+    try:
+        parts = (message.text or "").split()
+        bid = int(parts[1])
+    except Exception:
+        await message.answer("Формат: /remindnow <booking_id>")
+        return
+    await ReminderService.send_reminder_job(bid)
+    await message.answer(f"Ок, отправил напоминание для #{bid}")

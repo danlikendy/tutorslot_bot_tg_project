@@ -7,7 +7,7 @@ from aiogram import Bot
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.storage.models import Booking
+from app.storage.models import Booking, WeeklySubscription
 from app.services.email_service import EmailService
 from app.utils.dates import format_dt_ru
 
@@ -114,3 +114,132 @@ class ReminderService:
                 )
 
             log.info("reminders.fire booking=%s -> sent", booking_id)
+
+    @staticmethod
+    async def schedule_for_weekly(scheduler, sub: WeeklySubscription, tz_name: str = settings.tz):
+        if not settings.reminders_enabled or scheduler is None or sub is None or not sub.is_active:
+            return
+
+        try:
+            hh, mm = map(int, sub.time_hhmm.split(":"))
+        except Exception:
+            log.warning("weekly.schedule: bad time_hhmm=%s for sub=%s", sub.time_hhmm, sub.id)
+            return
+
+        dow_24 = (sub.weekday - 1) % 7
+
+        if hh == 0:
+            dow_1 = (sub.weekday - 1) % 7
+            hh_1 = 23
+            mm_1 = mm
+        else:
+            dow_1 = sub.weekday
+            hh_1 = hh - 1
+            mm_1 = mm
+
+        job_id_24 = f"weekly_sub_{sub.id}_d24"
+        try:
+            scheduler.remove_job(job_id_24)
+        except Exception:
+            pass
+        scheduler.add_job(
+            ReminderService.send_weekly_subscription_reminder_job,
+            trigger="cron",
+            day_of_week=dow_24, hour=hh, minute=mm,
+            id=job_id_24,
+            kwargs={"sub_id": sub.id, "offset_min": 1440, "tz_name": tz_name},
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=60,
+        )
+
+        job_id_1 = f"weekly_sub_{sub.id}_d1"
+        try:
+            scheduler.remove_job(job_id_1)
+        except Exception:
+            pass
+        scheduler.add_job(
+            ReminderService.send_weekly_subscription_reminder_job,
+            trigger="cron",
+            day_of_week=dow_1, hour=hh_1, minute=mm_1,
+            id=job_id_1,
+            kwargs={"sub_id": sub.id, "offset_min": 60, "tz_name": tz_name},
+            replace_existing=True,
+            coalesce=True,
+            misfire_grace_time=60,
+        )
+
+        log.info("reminders.schedule weekly sub=%s -> d24@dow=%s %02d:%02d, d1@dow=%s %02d:%02d",
+                 sub.id, dow_24, hh, mm, dow_1, hh_1, mm_1)
+
+    @staticmethod
+    async def cancel_for_weekly(scheduler, sub_id: int):
+        if not settings.reminders_enabled or scheduler is None:
+            return
+        for suffix in ("d24", "d1"):
+            job_id = f"weekly_sub_{sub_id}_{suffix}"
+            try:
+                scheduler.remove_job(job_id)
+            except Exception:
+                pass
+        log.info("reminders.cancel weekly sub=%s", sub_id)
+
+    @staticmethod
+    async def send_weekly_subscription_reminder_job(sub_id: int, offset_min: int, tz_name: str):
+        from sqlalchemy import select
+        from app.storage.db import SessionLocal
+        from app.storage.models import WeeklySubscription as WS, User as U
+        from app.runtime import get_bot
+
+        async with SessionLocal() as session:
+            res = await session.execute(select(WS).where(WS.id == sub_id))
+            sub: Optional[WS] = res.scalar_one_or_none()
+            if not sub or not sub.is_active:
+                log.info("reminders.weekly.fire sub=%s -> not found or inactive", sub_id)
+                return
+
+            tz = ZoneInfo(tz_name)
+            now = datetime.now(tz)
+            hh, mm = map(int, sub.time_hhmm.split(":"))
+            days_ahead = (sub.weekday - now.weekday()) % 7
+            start_at = (now + timedelta(days=days_ahead)).replace(
+                hour=hh, minute=mm, second=0, microsecond=0
+            )
+
+            student = sub.student_name or "Ученик"
+            when_txt = format_dt_ru(start_at)
+
+            bot: Bot = get_bot()
+
+            ures = await session.execute(select(U).where(U.id == sub.user_id))
+            user = ures.scalar_one_or_none()
+
+            try:
+                if user and user.tg_id:
+                    await bot.send_message(
+                        user.tg_id, f"Напоминание о еженедельном занятии\n{when_txt}\nИмя: {student}"
+                    )
+            except Exception:
+                pass
+
+            for admin_id in settings.admins:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"Еженедельное напоминание (ученик): {student}\nКогда: {when_txt}\nКонтакт: {sub.student_contact or '—'}",
+                    )
+                except Exception:
+                    pass
+
+            email = sub.student_contact or ""
+            if EmailService.is_email(email):
+                try:
+                    EmailService.send(
+                        to_email=email,
+                        subject="Напоминание о занятии (еженедельно)",
+                        body=f"Здравствуйте!\nНапоминаем о занятии: {when_txt}\nУченик: {student}",
+                    )
+                except Exception:
+                    pass
+
+            log.info("reminders.weekly.fire sub=%s offset=%s -> sent", sub_id, offset_min)
