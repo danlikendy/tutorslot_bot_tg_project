@@ -136,10 +136,24 @@ class GoogleCalendarService:
 
         return {
             "summary": f"Занятие: {student}",
-            "description": f"Ученик: {student}\nКонтакт: {contact or '—'}",
+            "description": f"Ученик: {student}\nКонтакт: {contact or '—'}\n\nЗанятие с репетитором",
             "start": {"dateTime": _rfc3339(start_at), "timeZone": _TZ_NAME},
             "end": {"dateTime": _rfc3339(end_at), "timeZone": _TZ_NAME},
             "attendees": attendees,
+            "reminders": {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "email", "minutes": 1440},  # 24 часа
+                    {"method": "popup", "minutes": 60},   # 1 час
+                ]
+            },
+            "transparency": "opaque",  # Занято
+            "showAs": "busy",
+            "colorId": "1",  # Синий цвет для занятий
+            "guestsCanModify": False,
+            "guestsCanInviteOthers": False,
+            "guestsCanSeeOtherGuests": False,
+            "sendUpdates": "all",  # Отправляем уведомления всем
         }
 
     @classmethod
@@ -148,26 +162,203 @@ class GoogleCalendarService:
     ) -> Optional[str]:
         svc = cls._get_service()
         if not svc:
+            log.warning("gcal.create: no service available")
             return None
         try:
+            log.info(f"Creating event for booking {booking_id}: student={student}, contact={contact}, start_at={start_at}")
+            
             body = cls._event_body(start_at, student, contact)
             body["description"] += f"\nBooking #{booking_id}"
+            
+            log.info(f"Event body prepared: summary={body.get('summary')}, description={body.get('description')}")
+            
+            # Добавляем настройки для правильной работы с приглашениями
+            body["guestsCanModify"] = False
+            body["guestsCanInviteOthers"] = False
+            body["guestsCanSeeOtherGuests"] = False
+            
+            # Добавляем настройки для отправки уведомлений
+            body["sendUpdates"] = "all"  # Отправляем уведомления всем участникам
+            
+            # Добавляем уникальный идентификатор для избежания дублирования
+            body["source"] = {"title": f"TutorSlot Bot - Booking #{booking_id}", "url": "https://t.me/tutorslot_bot"}
+            
             ev = (
                 svc.events()
                 .insert(
                     calendarId=getattr(settings, "google_calendar_id", "primary"),
                     body=body,
-                    sendUpdates="all",
+                    sendUpdates="all",  # Дублируем здесь тоже для надежности
+                    conferenceDataVersion=1,  # Включаем поддержку конференций
                 )
                 .execute()
             )
-            return ev.get("id")
+            event_id = ev.get("id")
+            if event_id:
+                log.info(f"gcal.create: successfully created event {event_id} for booking {booking_id}")
+                log.info(f"Event details: summary={ev.get('summary')}, description={ev.get('description')}")
+                log.info(f"Event attendees: {ev.get('attendees', [])}")
+                log.info(f"Event reminders: {ev.get('reminders', {})}")
+                
+                # Принудительно обновляем календарь
+                cls._force_calendar_refresh(svc)
+            else:
+                log.error(f"gcal.create: no event ID returned for booking {booking_id}")
+            return event_id
         except HttpError as e:
             try:
                 detail = json.loads(e.content.decode())
             except Exception:
                 detail = str(e)
             log.error("gcal.create error: %s", detail)
+            return None
+        except Exception as e:
+            log.error(f"gcal.create unexpected error: {e}")
+            return None
+
+    @classmethod
+    def check_calendar_permissions(cls) -> bool:
+        """Проверяет права доступа к календарю"""
+        svc = cls._get_service()
+        if not svc:
+            log.error("gcal.check_permissions: no service available")
+            return False
+        
+        try:
+            # Пытаемся получить информацию о календаре
+            calendar = svc.calendars().get(
+                calendarId=getattr(settings, "google_calendar_id", "primary")
+            ).execute()
+            
+            log.info(f"Calendar access confirmed: {calendar.get('summary', 'Unknown')}")
+            log.info(f"Calendar permissions: {calendar.get('accessRole', 'Unknown')}")
+            
+            # Выводим всю информацию о календаре для отладки
+            log.info(f"Full calendar info: {json.dumps(calendar, indent=2, default=str)}")
+            
+            # Проверяем права доступа
+            access_role = calendar.get('accessRole', '')
+            if access_role in ['owner', 'writer']:
+                log.info("Calendar permissions: SUFFICIENT (owner/writer)")
+                return True
+            elif access_role == 'reader':
+                log.error("Calendar permissions: INSUFFICIENT (reader only)")
+                return False
+            else:
+                log.warning(f"Calendar permissions: UNKNOWN ({access_role})")
+                log.warning(f"Calendar keys: {list(calendar.keys())}")
+                
+                # Попробуем проверить права через попытку создания тестового события
+                log.info("Trying to test permissions by creating a test event...")
+                try:
+                    from datetime import datetime, timedelta
+                    test_start = datetime.now() + timedelta(hours=1)
+                    test_event = {
+                        "summary": "Test Permission Event",
+                        "start": {"dateTime": test_start.isoformat() + 'Z', "timeZone": "UTC"},
+                        "end": {"dateTime": (test_start + timedelta(hours=1)).isoformat() + 'Z', "timeZone": "UTC"},
+                    }
+                    
+                    test_result = svc.events().insert(
+                        calendarId=getattr(settings, "google_calendar_id", "primary"),
+                        body=test_event,
+                        sendUpdates="none"
+                    ).execute()
+                    
+                    if test_result.get('id'):
+                        log.info("✅ SUCCESS: Can create events - permissions are SUFFICIENT")
+                        # Удаляем тестовое событие
+                        svc.events().delete(
+                            calendarId=getattr(settings, "google_calendar_id", "primary"),
+                            eventId=test_result['id']
+                        ).execute()
+                        return True
+                    else:
+                        log.warning("Test event creation failed - no event ID returned")
+                        return False
+                        
+                except Exception as test_e:
+                    log.error(f"Test event creation failed: {test_e}")
+                    return False
+                
+        except HttpError as e:
+            if e.resp.status == 403:
+                log.error("Calendar permissions: ACCESS DENIED (403)")
+                return False
+            elif e.resp.status == 404:
+                log.error("Calendar permissions: CALENDAR NOT FOUND (404)")
+                return False
+            else:
+                log.error(f"Calendar permissions check failed: {e}")
+                return False
+        except Exception as e:
+            log.error(f"Calendar permissions check unexpected error: {e}")
+            return False
+
+    @classmethod
+    def _force_calendar_refresh(cls, svc):
+        """Принудительно обновляет календарь"""
+        try:
+            # Получаем список событий для принудительного обновления
+            now = datetime.now()
+            time_min = now.isoformat() + 'Z'
+            time_max = (now + timedelta(days=30)).isoformat() + 'Z'
+            
+            events_result = svc.events().list(
+                calendarId=getattr(settings, "google_calendar_id", "primary"),
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=10,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            log.info(f"Calendar refreshed, found {len(events_result.get('items', []))} events")
+        except Exception as e:
+            log.warning(f"Failed to force calendar refresh: {e}")
+
+    @classmethod
+    def force_update_event(
+        cls, event_id: str, start_at: datetime, student: str, contact: Optional[str], booking_id: int = None
+    ) -> Optional[str]:
+        """Принудительное обновление события с пересозданием"""
+        svc = cls._get_service()
+        if not svc or not event_id:
+            log.warning("gcal.force_update: no service or event_id")
+            return None
+        
+        try:
+            log.info(f"Force updating event {event_id} by recreation")
+            
+            # Сначала удаляем старое событие
+            delete_success = cls.delete_event(event_id)
+            if not delete_success:
+                log.warning(f"Failed to delete old event {event_id} - may already be deleted")
+                # Продолжаем выполнение, так как событие могло быть уже удалено
+            
+            # Ждем немного для синхронизации
+            import time
+            time.sleep(2)
+            
+            # Создаем новое событие с правильным booking_id
+            new_event_id = cls.create_event(
+                booking_id=booking_id or 999,  # Используем переданный ID или временный
+                start_at=start_at,
+                student=student,
+                contact=contact
+            )
+            
+            if new_event_id:
+                log.info(f"Successfully recreated event: {new_event_id}")
+                return new_event_id  # Возвращаем новый ID события
+            else:
+                log.error("Failed to recreate event")
+                return None
+                
+        except Exception as e:
+            log.error(f"Force update failed: {e}")
+            import traceback
+            log.error(f"Traceback: {traceback.format_exc()}")
             return None
 
     @classmethod
@@ -176,12 +367,48 @@ class GoogleCalendarService:
     ) -> bool:
         svc = cls._get_service()
         if not svc or not event_id:
+            log.warning("gcal.update: no service or event_id")
             return False
         try:
+            log.info(f"Starting update for event {event_id}: student={student}, contact={contact}")
+            
+            # Сначала получаем существующее событие
+            existing_event = (
+                svc.events()
+                .get(
+                    calendarId=getattr(settings, "google_calendar_id", "primary"),
+                    eventId=event_id,
+                )
+                .execute()
+            )
+            
+            log.info(f"Retrieved existing event: summary={existing_event.get('summary')}, description={existing_event.get('description')}")
+            
+            # Создаем новое тело события с обновленными данными
             body = cls._event_body(start_at, student, contact)
+            
+            log.info(f"New event body: summary={body.get('summary')}, description={body.get('description')}")
+            
+            # Сохраняем существующие поля которые не должны изменяться
+            if "id" in existing_event:
+                body["id"] = existing_event["id"]
+            if "status" in existing_event:
+                body["status"] = existing_event["status"]
+            if "created" in existing_event:
+                body["created"] = existing_event["created"]
+            if "creator" in existing_event:
+                body["creator"] = existing_event["creator"]
+            if "organizer" in existing_event:
+                body["organizer"] = existing_event["organizer"]
+            if "htmlLink" in existing_event:
+                body["htmlLink"] = existing_event["htmlLink"]
+            
+            log.info(f"Final event body prepared with preserved fields")
+            
+            # Используем update для полного обновления события
             (
                 svc.events()
-                .patch(
+                .update(
                     calendarId=getattr(settings, "google_calendar_id", "primary"),
                     eventId=event_id,
                     body=body,
@@ -189,37 +416,54 @@ class GoogleCalendarService:
                 )
                 .execute()
             )
+            log.info(f"gcal.update: successfully updated event {event_id}")
             return True
         except HttpError as e:
+            if e.resp.status == 404:
+                log.error(f"gcal.update: event {event_id} not found")
+                return False
             try:
                 detail = json.loads(e.content.decode())
             except Exception:
                 detail = str(e)
             log.error("gcal.update error: %s", detail)
             return False
+        except Exception as e:
+            log.error(f"gcal.update unexpected error: {e}")
+            return False
 
     @classmethod
     def delete_event(cls, event_id: str) -> bool:
         svc = cls._get_service()
         if not svc or not event_id:
+            log.warning("gcal.delete: no service or event_id")
             return False
         try:
+            log.info(f"Deleting event {event_id} with sendUpdates='all'")
+            
             (
                 svc.events()
                 .delete(
                     calendarId=getattr(settings, "google_calendar_id", "primary"),
                     eventId=event_id,
-                    sendUpdates="all",
+                    sendUpdates="all",  # Отправляем уведомления всем участникам об отмене
                 )
                 .execute()
             )
+            log.info(f"gcal.delete: successfully deleted event {event_id}")
             return True
         except HttpError as e:
+            if e.resp.status == 404:
+                log.warning(f"gcal.delete: event {event_id} not found (already deleted?)")
+                return True  # Считаем успехом если событие уже удалено
             try:
                 detail = json.loads(e.content.decode())
             except Exception:
                 detail = str(e)
             log.error("gcal.delete error: %s", detail)
+            return False
+        except Exception as e:
+            log.error(f"gcal.delete unexpected error: {e}")
             return False
 
     @classmethod

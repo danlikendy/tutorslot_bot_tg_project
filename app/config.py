@@ -50,18 +50,18 @@ class Settings(BaseSettings):
     smtp_from: str = Field(default="", alias="SMTP_FROM")
 
     google_calendar_enabled: bool = Field(
-        default=False, alias="GOOGLE_CALENDAR_ENABLED"
+        default=True, alias="GOOGLE_CALENDAR_ENABLED"
     )
     google_calendar_id: str = Field(default="primary", alias="GOOGLE_CALENDAR_ID")
     google_credentials_json_path: str = Field(
-        default="./google_credentials.json", alias="GOOGLE_CREDENTIALS_JSON_PATH"
+        default="./app/integrations/credentials.json", alias="GOOGLE_CREDENTIALS_JSON_PATH"
     )
 
     google_oauth_client_secret_path: str = Field(
-        default="", alias="GOOGLE_OAUTH_CLIENT_SECRET_PATH"
+        default="./app/integrations/credentials.json", alias="GOOGLE_OAUTH_CLIENT_SECRET_PATH"
     )
     google_oauth_token_path: str = Field(
-        default="", alias="GOOGLE_OAUTH_TOKEN_PATH"
+        default="./app/integrations/token.json", alias="GOOGLE_OAUTH_TOKEN_PATH"
     )
 
     model_config = {

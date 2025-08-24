@@ -25,9 +25,17 @@ class ReminderService:
             start_at = start_at.replace(tzinfo=TZ)
         now = datetime.now(TZ)
 
+        # Проверяем что занятие еще не прошло
+        if start_at <= now:
+            log.info("reminders.skip booking=%s - lesson already passed: %s <= %s",
+                     booking.id, start_at, now)
+            return
+
         for minutes in settings.remind_offsets_minutes:
             minutes = int(minutes)
             when = start_at - timedelta(minutes=minutes)
+            
+            # Проверяем что время напоминания еще не прошло
             if when <= now:
                 log.info("reminders.skip booking=%s offset=%s when=%s <= now=%s",
                          booking.id, minutes, when, now)
@@ -94,8 +102,8 @@ class ReminderService:
                     await bot.send_message(
                         booking.user.tg_id, f"Напоминание о занятии\n{when_txt}\nИмя: {student}"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                log.error(f"Failed to send reminder to user {booking.user.tg_id}: {e}")
 
             for admin_id in settings.admins:
                 try:
@@ -103,15 +111,18 @@ class ReminderService:
                         admin_id,
                         f"Напоминание (ученик): {student}\nКогда: {when_txt}\nКонтакт: {booking.student_contact or '—'}",
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error(f"Failed to send reminder to admin {admin_id}: {e}")
 
             if EmailService.is_email(booking.student_contact):
-                EmailService.send(
-                    to_email=booking.student_contact,
-                    subject="Напоминание о занятии",
-                    body=f"Здравствуйте!\nНапоминаем о занятии: {when_txt}\nУченик: {student}",
-                )
+                try:
+                    EmailService.send(
+                        to_email=booking.student_contact,
+                        subject="Напоминание о занятии",
+                        body=f"Здравствуйте!\nНапоминаем о занятии: {when_txt}\nУченик: {student}",
+                    )
+                except Exception as e:
+                    log.error(f"Failed to send email reminder to {booking.student_contact}: {e}")
 
             log.info("reminders.fire booking=%s -> sent", booking_id)
 
@@ -219,8 +230,8 @@ class ReminderService:
                     await bot.send_message(
                         user.tg_id, f"Напоминание о еженедельном занятии\n{when_txt}\nИмя: {student}"
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                log.error(f"Failed to send weekly reminder to user {user.tg_id}: {e}")
 
             for admin_id in settings.admins:
                 try:
@@ -228,8 +239,8 @@ class ReminderService:
                         admin_id,
                         f"Еженедельное напоминание (ученик): {student}\nКогда: {when_txt}\nКонтакт: {sub.student_contact or '—'}",
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error(f"Failed to send weekly reminder to admin {admin_id}: {e}")
 
             email = sub.student_contact or ""
             if EmailService.is_email(email):
@@ -239,7 +250,7 @@ class ReminderService:
                         subject="Напоминание о занятии (еженедельно)",
                         body=f"Здравствуйте!\nНапоминаем о занятии: {when_txt}\nУченик: {student}",
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error(f"Failed to send weekly email reminder to {email}: {e}")
 
             log.info("reminders.weekly.fire sub=%s offset=%s -> sent", sub_id, offset_min)
