@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.storage.models import Slot, Booking
 
-WEEKDAY_HOURS = (15, 17, 19)
+WEEKDAY_HOURS = (16, 17, 19)  # 16:00, 17:45, 19:30
+WEEKDAY_MINUTES = (0, 45, 30)  # минуты для каждого часа
 WINDOW_DAYS = 14
 
 def _start_of_day(dt: datetime) -> datetime:
@@ -23,14 +24,41 @@ def _generate_all_candidates(start: datetime, days: int) -> List[datetime]:
         day = (start_day + timedelta(days=i)).date()
         if not _is_weekday(day):
             continue
-        for h in WEEKDAY_HOURS:
-            out.append(datetime.combine(day, time(hour=h)))
+        for h, m in zip(WEEKDAY_HOURS, WEEKDAY_MINUTES):
+            out.append(datetime.combine(day, time(hour=h, minute=m)))
     return out
 
 async def _occupied_datetimes(session: AsyncSession) -> set[datetime]:
+    # Получаем занятые слоты из обычных бронирований
     j = join(Slot, Booking, Slot.id == Booking.slot_id)
     res = await session.execute(select(Slot.start_at).select_from(j))
-    return set(res.scalars().all())
+    occupied_slots = set(res.scalars().all())
+    
+    # Получаем занятые слоты из интервальных занятий
+    interval_bookings = await session.execute(
+        select(Booking.weekday, Booking.time_hhmm)
+        .where(Booking.lesson_type == "interval")
+    )
+    
+    # Добавляем все будущие слоты для интервальных занятий
+    now = datetime.now()
+    for weekday, time_str in interval_bookings:
+        if time_str is None:  # Пропускаем записи без времени
+            continue
+        # Находим все даты с этим днем недели в ближайшие 14 дней
+        for i in range(14):
+            day = now.date() + timedelta(days=i)
+            if day.weekday() == weekday:
+                try:
+                    hour, minute = map(int, time_str.split(':'))
+                    slot_time = datetime.combine(day, time(hour=hour, minute=minute))
+                    if slot_time >= now:
+                        occupied_slots.add(slot_time)
+                except (ValueError, AttributeError):
+                    # Пропускаем некорректные времена
+                    continue
+    
+    return occupied_slots
 
 class SlotService:
     @staticmethod
@@ -48,7 +76,7 @@ class SlotService:
     @staticmethod
     async def available_times_for_day(session: AsyncSession, target_day: date, *, now: datetime | None = None) -> List[datetime]:
         now = now or datetime.now()
-        day_candidates = [datetime.combine(target_day, time(h)) for h in WEEKDAY_HOURS]
+        day_candidates = [datetime.combine(target_day, time(hour=h, minute=m)) for h, m in zip(WEEKDAY_HOURS, WEEKDAY_MINUTES)]
         busy = await _occupied_datetimes(session)
         return [dt for dt in day_candidates if dt not in busy and dt >= now]
 

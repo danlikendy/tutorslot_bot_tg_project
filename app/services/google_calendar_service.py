@@ -266,7 +266,7 @@ class GoogleCalendarService:
                     ).execute()
                     
                     if test_result.get('id'):
-                        log.info("✅ SUCCESS: Can create events - permissions are SUFFICIENT")
+                        log.info("SUCCESS: Can create events - permissions are SUFFICIENT")
                         # Удаляем тестовое событие
                         svc.events().delete(
                             calendarId=getattr(settings, "google_calendar_id", "primary"),

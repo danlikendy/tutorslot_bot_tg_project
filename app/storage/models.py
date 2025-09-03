@@ -21,22 +21,31 @@ class Slot(Base):
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), index=True, unique=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    booking: Mapped["Booking"] = relationship(back_populates="slot", uselist=False)
+    booking: Mapped[Optional["Booking"]] = relationship(back_populates="slot", uselist=False)
 
 class Booking(Base):
     __tablename__ = "bookings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    slot_id: Mapped[int] = mapped_column(ForeignKey("slots.id", ondelete="CASCADE"), unique=True)
+    slot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("slots.id", ondelete="CASCADE"), nullable=True, unique=True)
 
     student_name: Mapped[str] = mapped_column(String(128))
     student_contact: Mapped[str] = mapped_column(String(128))
+    
+    # Тип занятия: 'single' - одиночное, 'interval' - интервальное
+    lesson_type: Mapped[str] = mapped_column(String(20), default="single")
+    
+    # Для интервальных занятий - день недели (0=Пн, 6=Вс)
+    weekday: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    
+    # Для интервальных занятий - время в формате HH:MM
+    time_hhmm: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)
 
     remind_24h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     remind_1h_sent: Mapped[bool] = mapped_column(Boolean, default=False)
 
     user: Mapped["User"] = relationship(back_populates="bookings")
-    slot: Mapped["Slot"] = relationship(back_populates="booking")
+    slot: Mapped[Optional["Slot"]] = relationship(back_populates="booking")
 
     gcal_event_id: Mapped[Optional[str]] = mapped_column(nullable=True)
 

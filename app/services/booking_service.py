@@ -45,6 +45,7 @@ class BookingService:
         start_at: datetime,
         student_name: str,
         contact: Optional[str] = None,
+        lesson_type: str = "single",
     ) -> Optional[Booking]:
         
         booked_id = await session.scalar(
@@ -70,6 +71,7 @@ class BookingService:
             slot_id=slot_id,
             student_name=student_name,
             student_contact=(contact or None),
+            lesson_type=lesson_type,
         )
         session.add(booking)
         await session.flush()
@@ -103,6 +105,38 @@ class BookingService:
                 sched = _get_scheduler_safe()
                 if sched:
                     await ReminderService.schedule_for_booking(sched, booked)
+                
+                # Отправляем немедленное уведомление на email
+                from app.services.email_service import EmailService
+                if settings.smtp_enabled and EmailService.is_email(booked.student_contact):
+                    try:
+                        from app.utils.dates import format_dt_ru
+                        from zoneinfo import ZoneInfo
+                        
+                        start_at = booked.slot.start_at
+                        if start_at.tzinfo is None:
+                            start_at = start_at.replace(tzinfo=ZoneInfo(settings.tz))
+                        
+                        when_txt = format_dt_ru(start_at.astimezone(ZoneInfo(settings.tz)))
+                        
+                        success = EmailService.send(
+                            to_email=booked.student_contact,
+                            subject="Подтверждение записи на занятие",
+                            body=f"Здравствуйте!\n\nВы успешно записаны на занятие:\n"
+                                 f"Дата и время: {when_txt}\n"
+                                 f"Ученик: {booked.student_name}\n"
+                                 f"Контакт: {booked.student_contact}\n\n"
+                                 f"Запись #{booked.id}\n\n"
+                                 f"С уважением,\nРепетитор"
+                        )
+                        if success:
+                            log.info(f"Sent confirmation email to {booked.student_contact} for booking {booked.id}")
+                        else:
+                            log.warning(f"Failed to send confirmation email to {booked.student_contact} for booking {booked.id}")
+                    except Exception as e:
+                        log.error(f"Failed to send confirmation email to {booked.student_contact}: {e}")
+                else:
+                    log.info(f"Email disabled or invalid email address: {booked.student_contact}")
         except Exception as e:
             log.error(f"Exception scheduling reminders for booking {booked.id}: {e}")
 
@@ -130,6 +164,7 @@ class BookingService:
 
         # Сохраняем ID события для удаления из календаря
         gcal_event_id = booking.gcal_event_id
+        slot = booking.slot
 
         try:
             if settings.google_calendar_enabled and gcal_event_id:
@@ -145,7 +180,14 @@ class BookingService:
         except Exception as e:
             log.error(f"Exception canceling reminders for booking {booking_id}: {e}")
 
+        # Удаляем запись
         await session.delete(booking)
+        
+        # Если это одиночное занятие, удаляем и слот
+        if booking.lesson_type == "single" and slot is not None:
+            await session.delete(slot)
+            log.info(f"Deleted slot {slot.id} for cancelled booking {booking_id}")
+        
         await session.commit()
         return True
 
@@ -280,3 +322,108 @@ class BookingService:
         else:
             log.info(f"No changes detected for booking {booking_id}")
         return True
+
+    @staticmethod
+    async def book_interval(
+        session,
+        user: User,
+        weekday: int,
+        time_str: str,
+        student_name: str,
+        contact: Optional[str] = None,
+    ) -> Optional[Booking]:
+        """Бронирование интервального занятия"""
+        
+        # Проверяем, не занято ли уже это время для интервальных занятий
+        existing = await session.scalar(
+            select(Booking.id)
+            .where(
+                Booking.lesson_type == "interval",
+                Booking.weekday == weekday,
+                Booking.time_hhmm == time_str
+            )
+            .limit(1)
+        )
+        if existing is not None:
+            return None
+
+        # Создаем интервальное занятие
+        booking = Booking(
+            user_id=user.id,
+            slot_id=None,  # Для интервальных занятий slot_id может быть None
+            student_name=student_name,
+            student_contact=(contact or None),
+            lesson_type="interval",
+            weekday=weekday,
+            time_hhmm=time_str,
+        )
+        session.add(booking)
+        await session.flush()
+        await session.commit()
+
+        booked = await session.scalar(
+            select(Booking)
+            .where(Booking.id == booking.id)
+        )
+
+        # Создаем события в Google Calendar для интервальных занятий
+        try:
+            if settings.google_calendar_enabled and booked:
+                # Создаем события для ближайших 4 недель
+                from datetime import datetime, timedelta, time
+                from zoneinfo import ZoneInfo
+                
+                now = datetime.now(ZoneInfo(settings.tz))
+                weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+                
+                # Находим ближайшие даты с этим днем недели
+                for week in range(4):  # 4 недели вперед
+                    for day_offset in range(7):
+                        target_date = now.date() + timedelta(days=week * 7 + day_offset)
+                        if target_date.weekday() == weekday:
+                            hour, minute = map(int, time_str.split(':'))
+                            start_at = datetime.combine(target_date, time(hour=hour, minute=minute))
+                            start_at = start_at.replace(tzinfo=ZoneInfo(settings.tz))
+                            
+                            # Создаем событие только для будущих дат
+                            if start_at > now:
+                                ev_id = GoogleCalendarService.create_event(
+                                    booked.id,
+                                    start_at,
+                                    f"{booked.student_name} ({weekday_names[weekday]})",
+                                    booked.student_contact,
+                                )
+                                if ev_id:
+                                    log.info(f"Created Google Calendar event for interval booking: {ev_id} for {start_at}")
+                                break  # Создаем только одно событие на неделю
+        except Exception as e:
+            log.error(f"Exception creating Google Calendar events for interval booking {booked.id}: {e}")
+
+        # Отправляем немедленное уведомление на email для интервальных занятий
+        try:
+            if booked and settings.smtp_enabled and EmailService.is_email(booked.student_contact):
+                weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+                weekday_name = weekday_names[weekday] if weekday is not None else "Неизвестно"
+                
+                success = EmailService.send(
+                    to_email=booked.student_contact,
+                    subject="Подтверждение записи на интервальное занятие",
+                    body=f"Здравствуйте!\n\nВы успешно записаны на интервальное занятие:\n"
+                         f"День недели: {weekday_name}\n"
+                         f"Время: {time_str}\n"
+                         f"Ученик: {booked.student_name}\n"
+                         f"Контакт: {booked.student_contact}\n\n"
+                         f"Занятие будет повторяться каждую неделю в это время.\n"
+                         f"Запись #{booked.id}\n\n"
+                         f"С уважением,\nРепетитор"
+                )
+                if success:
+                    log.info(f"Sent confirmation email to {booked.student_contact} for interval booking {booked.id}")
+                else:
+                    log.warning(f"Failed to send confirmation email to {booked.student_contact} for interval booking {booked.id}")
+            else:
+                log.info(f"Email disabled or invalid email address for interval booking: {booked.student_contact if booked else 'None'}")
+        except Exception as e:
+            log.error(f"Failed to send confirmation email for interval booking {booked.id if booked else 'None'}: {e}")
+
+        return booked

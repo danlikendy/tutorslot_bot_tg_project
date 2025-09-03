@@ -23,11 +23,22 @@ class EmailService:
         msg.set_content(body)
 
         try:
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as s:
-                s.starttls()
-                if settings.smtp_user and settings.smtp_password:
-                    s.login(settings.smtp_user, settings.smtp_password)
-                s.send_message(msg)
+            if settings.smtp_port == 465:
+                # Для порта 465 используем SSL
+                with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port) as s:
+                    if settings.smtp_user and settings.smtp_password:
+                        s.login(settings.smtp_user, settings.smtp_password)
+                    s.send_message(msg)
+            else:
+                # Для других портов используем TLS
+                with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as s:
+                    s.starttls()
+                    if settings.smtp_user and settings.smtp_password:
+                        s.login(settings.smtp_user, settings.smtp_password)
+                    s.send_message(msg)
             return True
-        except Exception:
+        except Exception as e:
+            import logging
+            log = logging.getLogger(__name__)
+            log.error(f"Failed to send email: {e}")
             return False

@@ -47,14 +47,34 @@ async def _render_active_bookings_text() -> str:
     if not bookings:
         return "Броней нет"
 
+    single_bookings = [b for b in bookings if b.lesson_type == "single"]
+    interval_bookings = [b for b in bookings if b.lesson_type == "interval"]
+
     lines: list[str] = []
-    for b in bookings:
-        dt = b.slot.start_at
-        lines.append(
-            f"{format_dt_ru(dt)}\n"
-            f"Имя: {b.student_name or '—'}\n"
-            f"Контакт: {b.student_contact or '—'}"
-        )
+    
+    if single_bookings:
+        lines.append("=== ОДИНОЧНЫЕ ЗАНЯТИЯ ===")
+        for b in single_bookings:
+            dt = b.slot.start_at
+            lines.append(
+                f"{format_dt_ru(dt)}\n"
+                f"Имя: {b.student_name or '—'}\n"
+                f"Контакт: {b.student_contact or '—'}"
+            )
+    
+    if interval_bookings:
+        if single_bookings:
+            lines.append("")  # Пустая строка между секциями
+        lines.append("=== ИНТЕРВАЛЬНЫЕ ЗАНЯТИЯ ===")
+        weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница"]
+        for b in interval_bookings:
+            weekday_name = weekday_names[b.weekday] if b.weekday is not None else "—"
+            lines.append(
+                f"{weekday_name} {b.time_hhmm or '—'}\n"
+                f"Имя: {b.student_name or '—'}\n"
+                f"Контакт: {b.student_contact or '—'}"
+            )
+    
     return "\n\n".join(lines)
 
 @router.message(Command("admin"))
