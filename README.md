@@ -57,7 +57,7 @@
 
 5. Запускаем бота:
    ```bash
-   python -m app.main
+   .venv/bin/python -m app.main
    ```
 
 ## Тестирование
