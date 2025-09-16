@@ -55,12 +55,19 @@ async def _render_active_bookings_text() -> str:
     if single_bookings:
         lines.append("=== ОДИНОЧНЫЕ ЗАНЯТИЯ ===")
         for b in single_bookings:
-            dt = b.slot.start_at
-            lines.append(
-                f"{format_dt_ru(dt)}\n"
-                f"Имя: {b.student_name or '—'}\n"
-                f"Контакт: {b.student_contact or '—'}"
-            )
+            if b.slot:
+                dt = b.slot.start_at
+                lines.append(
+                    f"{format_dt_ru(dt)}\n"
+                    f"Имя: {b.student_name or '—'}\n"
+                    f"Контакт: {b.student_contact or '—'}"
+                )
+            else:
+                lines.append(
+                    f"Без слота\n"
+                    f"Имя: {b.student_name or '—'}\n"
+                    f"Контакт: {b.student_contact or '—'}"
+                )
     
     if interval_bookings:
         if single_bookings:
@@ -115,7 +122,18 @@ async def a_cancel(cb: CallbackQuery):
             return
 
         student = bk.student_name or "—"
-        when = bk.slot.start_at
+        
+        # Формируем информацию о времени в зависимости от типа занятия
+        if bk.lesson_type == "single" and bk.slot:
+            when = bk.slot.start_at
+            when_text = f"на дату {when:%d.%m %H:%M}"
+        elif bk.lesson_type == "interval":
+            weekday_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            weekday_name = weekday_names[bk.weekday] if bk.weekday is not None else "—"
+            time_str = bk.time_hhmm or "—"
+            when_text = f"интервальное занятие ({weekday_name} {time_str})"
+        else:
+            when_text = "неизвестное время"
 
         ok = await BookingService.admin_cancel(session, booking_id)
 
@@ -125,7 +143,7 @@ async def a_cancel(cb: CallbackQuery):
         all_bookings = list(res2.scalars().all())
 
     await msg.answer(
-        f"Ученик {student} на дату {when:%d.%m %H:%M} отменён" if ok else "Не удалось отменить запись"
+        f"Ученик {student} {when_text} отменён" if ok else "Не удалось отменить запись"
     )
     await msg.answer("Админ-панель (все записи):", reply_markup=kb_admin_bookings(all_bookings))
     await cb.answer()
@@ -276,7 +294,17 @@ async def admin_ids(message: Message):
     if not bs:
         await message.answer("Записей нет")
         return
-    lines = [f"#{b.id} — {b.slot.start_at:%d.%m %H:%M} • {b.student_name} ({b.student_contact or '—'})" for b in bs]
+    lines = []
+    for b in bs:
+        if b.lesson_type == "single" and b.slot:
+            lines.append(f"#{b.id} — {b.slot.start_at:%d.%m %H:%M} • {b.student_name} ({b.student_contact or '—'})")
+        elif b.lesson_type == "interval":
+            weekday_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            weekday_name = weekday_names[b.weekday] if b.weekday is not None else "—"
+            time_str = b.time_hhmm or "—"
+            lines.append(f"#{b.id} — {weekday_name} {time_str} (интервал) • {b.student_name} ({b.student_contact or '—'})")
+        else:
+            lines.append(f"#{b.id} — Без слота • {b.student_name} ({b.student_contact or '—'})")
     await message.answer("\n".join(lines))
 
 @router.message(Command("jobs"))

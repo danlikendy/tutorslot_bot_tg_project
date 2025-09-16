@@ -48,6 +48,9 @@ class Booking(Base):
     slot: Mapped[Optional["Slot"]] = relationship(back_populates="booking")
 
     gcal_event_id: Mapped[Optional[str]] = mapped_column(nullable=True)
+    
+    # Для интервальных занятий - JSON список ID событий календаря
+    gcal_event_ids: Mapped[Optional[str]] = mapped_column(nullable=True)
 
     __table_args__ = (
         UniqueConstraint("slot_id", name="uq_booking_slot"),

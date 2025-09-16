@@ -9,9 +9,11 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery
+from sqlalchemy import select
 
 from app.services.slot_service import SlotService
 from app.services.booking_service import BookingService
+from app.storage.models import Booking
 from app.bot.keyboards.common import (
     kb_days_with_counts,
     kb_times_for_day,
@@ -35,15 +37,15 @@ class BookingFSM(StatesGroup):
     waiting_weekday = State()
     waiting_interval_time = State()
 
-async def _busy_weekly_hhmm_for_day(session, day: date) -> set[str]:
-    wday = day.weekday()  # Пн=0..Вс=6
+async def _busy_weekly_hhmm_for_day(session, weekday: int) -> set[str]:
+    """Получаем занятые времена для дня недели в интервальных записях"""
     rows = await session.execute(
-        WeeklySubscription.__table__.select().where(
-            WeeklySubscription.weekday == wday,
-            WeeklySubscription.is_active == True,
+        select(Booking.time_hhmm).where(
+            Booking.lesson_type == "interval",
+            Booking.weekday == weekday,
         )
     )
-    return {m["time_hhmm"] for m in rows.mappings().all()}
+    return {row[0] for row in rows.all() if row[0] is not None}
 
 @router.callback_query(F.data.startswith("lesson_type:"))
 async def pick_lesson_type(cb: CallbackQuery, state: FSMContext):
@@ -81,9 +83,13 @@ async def pick_weekday(cb: CallbackQuery, state: FSMContext):
     weekday = int(cb.data.split(":", 1)[1])
     await state.update_data(weekday=weekday)
     
+    # Получаем занятые времена для этого дня недели
+    async with SessionLocal() as session:
+        busy_times = await _busy_weekly_hhmm_for_day(session, weekday)
+    
     await msg.answer(
         "Выберите время:",
-        reply_markup=kb_interval_times(),
+        reply_markup=kb_interval_times(busy_times),
     )
     await state.set_state(BookingFSM.waiting_interval_time)
     await cb.answer()
@@ -191,17 +197,27 @@ async def confirm_booking(message: Message, state: FSMContext):
                 await state.clear()
                 return
 
-            booked_at = booking.slot.start_at
-            if booked_at.tzinfo is None:
-                booked_at = booked_at.replace(tzinfo=TZ)
+            if booking.slot:
+                booked_at = booking.slot.start_at
+                if booked_at.tzinfo is None:
+                    booked_at = booked_at.replace(tzinfo=TZ)
+            else:
+                # Для интервальных занятий без слота
+                booked_at = None
             student_name = booking.student_name
             contact = booking.student_contact
 
         await state.clear()
-        await message.answer(
-            f"Вы записаны: {format_dt_ru(booked_at.astimezone(TZ))}\n"
-            f"Имя: {student_name}\nКонтакт: {contact}"
-        )
+        if booked_at:
+            await message.answer(
+                f"Вы записаны: {format_dt_ru(booked_at.astimezone(TZ))}\n"
+                f"Имя: {student_name}\nКонтакт: {contact}"
+            )
+        else:
+            await message.answer(
+                f"Вы записаны на интервальное занятие\n"
+                f"Имя: {student_name}\nКонтакт: {contact}"
+            )
     
     elif lesson_type == "interval":
         # Обработка интервального занятия

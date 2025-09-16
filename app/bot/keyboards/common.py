@@ -53,8 +53,12 @@ def kb_admin_bookings(bookings: Sequence[Booking]) -> InlineKeyboardMarkup:
     if single_bookings:
         b.row(InlineKeyboardButton(text="=== ОДИНОЧНЫЕ ЗАНЯТИЯ ===", callback_data="noop"))
         for bk in single_bookings:
-            dt = bk.slot.start_at
-            b.row(InlineKeyboardButton(text=f"{dt:%d.%m %H:%M} • {bk.student_name}", callback_data="noop"))
+            if bk.slot:
+                dt = bk.slot.start_at
+                text = f"{dt:%d.%m %H:%M} • {bk.student_name}"
+            else:
+                text = f"Без слота • {bk.student_name}"
+            b.row(InlineKeyboardButton(text=text, callback_data="noop"))
             b.row(
                 InlineKeyboardButton(text="Изменить", callback_data=f"a:edit:{bk.id}"),
                 InlineKeyboardButton(text="Отменить", callback_data=f"a:cancel:{bk.id}"),
@@ -125,11 +129,15 @@ def kb_weekdays() -> InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
-def kb_interval_times() -> InlineKeyboardMarkup:
+def kb_interval_times(busy_times: set[str] | None = None) -> InlineKeyboardMarkup:
     """Клавиатура для выбора времени интервального занятия"""
     kb = InlineKeyboardBuilder()
     times = ["16:00", "17:45", "19:30"]
+    busy_times = busy_times or set()
+    
     for time_str in times:
-        kb.button(text=time_str, callback_data=f"interval_time:{time_str}")
+        if time_str not in busy_times:
+            # Показываем только свободные времена
+            kb.button(text=time_str, callback_data=f"interval_time:{time_str}")
     kb.adjust(1)
     return kb.as_markup()

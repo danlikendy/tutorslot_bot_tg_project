@@ -164,14 +164,40 @@ class BookingService:
 
         # Сохраняем ID события для удаления из календаря
         gcal_event_id = booking.gcal_event_id
+        gcal_event_ids = booking.gcal_event_ids
         slot = booking.slot
 
         try:
-            if settings.google_calendar_enabled and gcal_event_id:
-                GoogleCalendarService.delete_event(gcal_event_id)
-                log.info(f"Deleted Google Calendar event: {gcal_event_id}")
+            if settings.google_calendar_enabled:
+                # Для одиночных занятий удаляем одно событие
+                if booking.lesson_type == "single" and gcal_event_id:
+                    GoogleCalendarService.delete_event(gcal_event_id)
+                    log.info(f"Deleted Google Calendar event: {gcal_event_id}")
+                
+                # Для интервальных занятий удаляем текущее событие и отменяем запланированные
+                elif booking.lesson_type == "interval":
+                    # Удаляем текущее событие
+                    if gcal_event_id:
+                        GoogleCalendarService.delete_event(gcal_event_id)
+                        log.info(f"Deleted current Google Calendar event: {gcal_event_id}")
+                    
+                    # Отменяем все запланированные задачи для этого занятия
+                    try:
+                        from app.main import get_scheduler
+                        scheduler = get_scheduler()
+                        if scheduler:
+                            # Удаляем все задачи с префиксом для этого занятия
+                            jobs = scheduler.get_jobs()
+                            cancelled_count = 0
+                            for job in jobs:
+                                if job.id.startswith(f"interval_event_{booking_id}_"):
+                                    scheduler.remove_job(job.id)
+                                    cancelled_count += 1
+                            log.info(f"Cancelled {cancelled_count} scheduled interval events for booking {booking_id}")
+                    except Exception as e:
+                        log.error(f"Failed to cancel scheduled interval events: {e}")
         except Exception as e:
-            log.error(f"Failed to delete Google Calendar event: {e}")
+            log.error(f"Failed to delete Google Calendar events: {e}")
 
         try:
             sched = _get_scheduler_safe()
@@ -190,6 +216,31 @@ class BookingService:
         
         await session.commit()
         return True
+
+    @staticmethod
+    async def _schedule_next_interval_event(session, booking: Booking, current_start_at: datetime):
+        """Планирует создание следующего события для интервального занятия через неделю"""
+        try:
+            from datetime import timedelta
+            from zoneinfo import ZoneInfo
+            
+            # Вычисляем дату следующего события (через неделю)
+            next_start_at = current_start_at + timedelta(days=7)
+            
+            # Проверяем, что не превышаем лимит (июнь 2026)
+            end_date = datetime(2026, 6, 26, tzinfo=ZoneInfo(settings.tz))
+            if next_start_at > end_date:
+                log.info(f"Interval booking {booking.id} reached end date, no more events scheduled")
+                return
+            
+            # Планируем создание события через неделю
+            from app.scheduler.jobs import schedule_interval_event_creation
+            await schedule_interval_event_creation(booking.id, next_start_at)
+            
+            log.info(f"Scheduled next interval event for booking {booking.id} on {next_start_at}")
+            
+        except Exception as e:
+            log.error(f"Failed to schedule next interval event for booking {booking.id}: {e}")
 
     @staticmethod
     async def reschedule_to(session, booking_id: int, new_start_at: datetime) -> bool:
@@ -369,33 +420,46 @@ class BookingService:
         # Создаем события в Google Calendar для интервальных занятий
         try:
             if settings.google_calendar_enabled and booked:
-                # Создаем события для ближайших 4 недель
+                # Создаем только одно событие на ближайшую дату
                 from datetime import datetime, timedelta, time
                 from zoneinfo import ZoneInfo
                 
                 now = datetime.now(ZoneInfo(settings.tz))
                 weekday_names = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
                 
-                # Находим ближайшие даты с этим днем недели
-                for week in range(4):  # 4 недели вперед
-                    for day_offset in range(7):
-                        target_date = now.date() + timedelta(days=week * 7 + day_offset)
-                        if target_date.weekday() == weekday:
-                            hour, minute = map(int, time_str.split(':'))
-                            start_at = datetime.combine(target_date, time(hour=hour, minute=minute))
-                            start_at = start_at.replace(tzinfo=ZoneInfo(settings.tz))
-                            
-                            # Создаем событие только для будущих дат
-                            if start_at > now:
-                                ev_id = GoogleCalendarService.create_event(
-                                    booked.id,
-                                    start_at,
-                                    f"{booked.student_name} ({weekday_names[weekday]})",
-                                    booked.student_contact,
-                                )
-                                if ev_id:
-                                    log.info(f"Created Google Calendar event for interval booking: {ev_id} for {start_at}")
-                                break  # Создаем только одно событие на неделю
+                # Находим ближайшую дату с этим днем недели
+                days_ahead = (weekday - now.weekday()) % 7
+                if days_ahead == 0:  # Если сегодня тот же день недели
+                    days_ahead = 7  # Берем следующую неделю
+                
+                target_date = now.date() + timedelta(days=days_ahead)
+                hour, minute = map(int, time_str.split(':'))
+                start_at = datetime.combine(target_date, time(hour=hour, minute=minute))
+                start_at = start_at.replace(tzinfo=ZoneInfo(settings.tz))
+                
+                # Создаем событие только для будущих дат
+                if start_at > now:
+                    # Создаем слот для интервального занятия
+                    slot = Slot(start_at=start_at)
+                    session.add(slot)
+                    await session.flush()
+                    
+                    # Связываем слот с записью
+                    booked.slot_id = slot.id
+                    
+                    ev_id = GoogleCalendarService.create_event(
+                        booked.id,
+                        start_at,
+                        f"{booked.student_name} ({weekday_names[weekday]})",
+                        booked.student_contact,
+                    )
+                    if ev_id:
+                        booked.gcal_event_id = ev_id  # Сохраняем ID текущего события
+                        await session.flush()
+                        log.info(f"Created Google Calendar event for interval booking: {ev_id} for {start_at}")
+                        
+                        # Планируем создание следующего события через неделю
+                        await _schedule_next_interval_event(session, booked, start_at)
         except Exception as e:
             log.error(f"Exception creating Google Calendar events for interval booking {booked.id}: {e}")
 

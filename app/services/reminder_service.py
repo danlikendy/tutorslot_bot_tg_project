@@ -20,10 +20,8 @@ class ReminderService:
         if not settings.reminders_enabled or scheduler is None or booking is None:
             return
 
-        # Интервальные занятия не имеют напоминаний, так как это паттерн, а не конкретное событие
-        if booking.lesson_type == "interval":
-            log.info("reminders.skip booking=%s - interval lesson, no reminders", booking.id)
-            return
+        # Интервальные занятия теперь имеют напоминания для текущего события
+        # (напоминания отключаются только для старых записей без slot)
 
         if booking.slot is None:
             log.warning("reminders.skip booking=%s - no slot", booking.id)
